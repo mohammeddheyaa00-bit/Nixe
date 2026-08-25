@@ -1,86 +1,109 @@
-const Database = require("better-sqlite3");
-const db = new Database("nixe.db");
+const fs = require("fs");
+const path = require("path");
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS businesses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_phone TEXT UNIQUE NOT NULL,
-    business_name TEXT NOT NULL,
-    business_type TEXT,
-    menu TEXT,
-    hours TEXT,
-    extra_info TEXT,
-    whatsapp_phone_number_id TEXT,
-    whatsapp_token TEXT,
-    subscription_status TEXT DEFAULT 'inactive',
-    subscription_expires_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
+const DB_FILE = path.join(__dirname, "data.json");
 
-  CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    business_id INTEGER NOT NULL,
-    amount INTEGER NOT NULL,
-    provider TEXT NOT NULL,
-    provider_transaction_id TEXT,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (business_id) REFERENCES businesses (id)
-  );
-`);
+function load() {
+  try {
+    return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+  } catch {
+    return { businesses: [], payments: [], nextId: 1 };
+  }
+}
+
+function save(data) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
 
 function createBusiness({ ownerPhone, name, type, menu, hours, extra }) {
-  const stmt = db.prepare(`
-    INSERT INTO businesses (owner_phone, business_name, business_type, menu, hours, extra_info)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  return stmt.run(ownerPhone, name, type, menu, hours, extra).lastInsertRowid;
+  const data = load();
+  if (data.businesses.find((b) => b.owner_phone === ownerPhone)) {
+    throw new Error("الرقم مسجل مسبقاً");
+  }
+  const business = {
+    id: data.nextId++,
+    owner_phone: ownerPhone,
+    business_name: name,
+    business_type: type || "",
+    menu: menu || "",
+    hours: hours || "",
+    extra_info: extra || "",
+    whatsapp_phone_number_id: null,
+    whatsapp_token: null,
+    subscription_status: "inactive",
+    subscription_expires_at: null,
+    created_at: new Date().toISOString(),
+  };
+  data.businesses.push(business);
+  save(data);
+  return business.id;
 }
 
 function getBusinessByOwnerPhone(phone) {
-  return db.prepare("SELECT * FROM businesses WHERE owner_phone = ?").get(phone);
+  return load().businesses.find((b) => b.owner_phone === phone);
 }
 
 function getBusinessByWhatsappNumberId(phoneNumberId) {
-  return db.prepare("SELECT * FROM businesses WHERE whatsapp_phone_number_id = ?").get(phoneNumberId);
+  return load().businesses.find((b) => b.whatsapp_phone_number_id === phoneNumberId);
 }
 
 function getBusinessById(id) {
-  return db.prepare("SELECT * FROM businesses WHERE id = ?").get(id);
+  return load().businesses.find((b) => b.id === Number(id));
 }
 
 function linkWhatsappNumber(businessId, phoneNumberId, token) {
-  db.prepare("UPDATE businesses SET whatsapp_phone_number_id = ?, whatsapp_token = ? WHERE id = ?")
-    .run(phoneNumberId, token, businessId);
+  const data = load();
+  const biz = data.businesses.find((b) => b.id === Number(businessId));
+  if (biz) {
+    biz.whatsapp_phone_number_id = phoneNumberId;
+    biz.whatsapp_token = token;
+    save(data);
+  }
 }
 
 function activateSubscription(businessId, days = 30) {
-  const business = getBusinessById(businessId);
+  const data = load();
+  const biz = data.businesses.find((b) => b.id === Number(businessId));
   const now = new Date();
   const currentExpiry =
-    business.subscription_expires_at && new Date(business.subscription_expires_at) > now
-      ? new Date(business.subscription_expires_at)
+    biz.subscription_expires_at && new Date(biz.subscription_expires_at) > now
+      ? new Date(biz.subscription_expires_at)
       : now;
   const newExpiry = new Date(currentExpiry.getTime() + days * 24 * 60 * 60 * 1000);
-
-  db.prepare("UPDATE businesses SET subscription_status = 'active', subscription_expires_at = ? WHERE id = ?")
-    .run(newExpiry.toISOString(), businessId);
-
+  biz.subscription_status = "active";
+  biz.subscription_expires_at = newExpiry.toISOString();
+  save(data);
   return newExpiry;
 }
 
 function expireOverdueSubscriptions() {
-  const now = new Date().toISOString();
-  return db.prepare(
-    "UPDATE businesses SET subscription_status = 'expired' WHERE subscription_status = 'active' AND subscription_expires_at < ?"
-  ).run(now).changes;
+  const data = load();
+  const now = new Date();
+  let count = 0;
+  data.businesses.forEach((b) => {
+    if (b.subscription_status === "active" && new Date(b.subscription_expires_at) < now) {
+      b.subscription_status = "expired";
+      count++;
+    }
+  });
+  if (count > 0) save(data);
+  return count;
 }
 
 function recordPayment({ businessId, amount, provider, providerTransactionId, status }) {
-  return db.prepare(`
-    INSERT INTO payments (business_id, amount, provider, provider_transaction_id, status)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(businessId, amount, provider, providerTransactionId, status).lastInsertRowid;
+  const data = load();
+  const payment = {
+    id: data.nextId++,
+    business_id: Number(businessId),
+    amount,
+    provider,
+    provider_transaction_id: providerTransactionId,
+    status,
+    created_at: new Date().toISOString(),
+  };
+  data.payments.push(payment);
+  save(data);
+  return payment.id;
 }
 
 module.exports = {
@@ -93,4 +116,3 @@ module.exports = {
   expireOverdueSubscriptions,
   recordPayment,
 };
-
