@@ -178,7 +178,7 @@ app.post("/api/chat", async (req, res) => {
 app.get("/", (req, res) => res.send("Nixe server شغال ✅"));
 
 subscription.startExpiryChecker();
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Nixe سيرفر شغال على المنفذ ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`Nixe سيرفر شغال على المنفذ ${PORT}`));
+
 
